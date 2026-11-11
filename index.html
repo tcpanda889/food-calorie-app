@@ -105,6 +105,32 @@
     margin-top: 14px; font-size: 12.5px; line-height: 1.7; color: #555;
     background: #f6ffed; border: 1px solid #b7eb8f; border-radius: 10px; padding: 10px 12px;
   }
+  /* AI 复检命令栏 */
+  .recheck-bar {
+    margin: 16px 16px 20px; background: var(--card); border-radius: var(--radius);
+    padding: 14px 16px; box-shadow: 0 4px 16px rgba(0,0,0,.05);
+  }
+  .recheck-title { font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+  .recheck-hint { font-size: 11.5px; color: var(--sub); margin-top: 3px; }
+  .recheck-row { display: flex; gap: 8px; margin-top: 10px; }
+  .recheck-input {
+    flex: 1; border: 1.5px solid #eee; border-radius: 10px; padding: 10px 12px;
+    font-size: 13px; outline: none; min-width: 0; background: #fafafa;
+  }
+  .recheck-input:focus { border-color: var(--primary); background: #fff; }
+  .recheck-btn {
+    border: none; border-radius: 10px; padding: 0 16px; font-size: 13px; font-weight: 600;
+    background: var(--primary); color: #fff; cursor: pointer; white-space: nowrap;
+  }
+  .recheck-btn:disabled { opacity: .55; }
+  .voice-btn { padding: 0 12px; font-size: 15px; }
+  .voice-btn.listening { background: #ff4d4f; animation: micPulse 1s ease-in-out infinite; }
+  @keyframes micPulse { 50% { opacity: .55; } }
+  .recheck-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .chip {
+    font-size: 11.5px; color: var(--primary); background: var(--primary-soft);
+    border-radius: 999px; padding: 5px 11px; cursor: pointer; border: none;
+  }
   .section-title {
     margin: 0 16px 10px; font-size: 16px; font-weight: 700;
     display: flex; justify-content: space-between; align-items: center;
@@ -352,8 +378,10 @@ async function recognizeViaApi() {
 }
 
 /* ============ 结果渲染 ============ */
+let lastResult = null;
 function showResult(r, isApi) {
   const c = Math.round(r.confidence * 100);
+  lastResult = r;
   $("resultArea").innerHTML = `
     <div class="result-card">
       <div class="result-top">
@@ -381,8 +409,95 @@ function showResult(r, isApi) {
         <span><b>${r.total.kcal}</b> 千卡</span>
       </div>
       <div class="tip">💡 ${r.tip}</div>
+    </div>
+    <div class="recheck-bar">
+      <div class="recheck-title">🔁 对结果有疑问？让 AI 复检</div>
+      <div class="recheck-hint">输入文字或点击 🎤 语音说出命令，大模型将重新看图检验，并联动百度交叉复核</div>
+      <div class="recheck-row">
+        <input id="recheckInput" class="recheck-input" placeholder="例如：我觉得是苹果，请重新检验"
+               onkeydown="if(event.key==='Enter')aiRecheck()">
+        <button id="voiceBtn" class="recheck-btn voice-btn" title="语音输入" onclick="toggleVoice()">🎤</button>
+        <button id="recheckBtn" class="recheck-btn" onclick="aiRecheck()">🔄 复检</button>
+      </div>
+      <div class="recheck-chips">
+        <button class="chip" onclick="chipRecheck('我觉得识别错了，请重新仔细看图检验')">我觉得识别错了</button>
+        <button class="chip" onclick="chipRecheck('请重新仔细观察数量、果形和表皮纹理')">请重新仔细看图</button>
+        <button class="chip" onclick="chipRecheck('请对比所有易混淆的候选食物再下结论')">列出易混淆候选</button>
+      </div>
     </div>`;
   $("resultArea").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ============ AI 复检（文字 / 语音命令） ============ */
+function chipRecheck(t) {
+  $("recheckInput").value = t;
+  aiRecheck();
+}
+
+async function aiRecheck() {
+  if (!lastResult) return;
+  if (!apiBase) { alert("演示模式不支持 AI 复检，请点击右上角 ⚙ 配置后端接口地址。"); return; }
+  if (!currentImage) { alert("请先拍照或选择图片再复检。"); return; }
+  const input = $("recheckInput");
+  const text = (input.value || "").trim() || "请重新仔细检验识别结果是否正确";
+  const btn = $("recheckBtn");
+  btn.disabled = true; btn.textContent = "复检中…";
+  try {
+    const res = await fetch(apiBase.replace(/\/$/, "") + "/api/recheck", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image_base64: currentImage.split(",")[1], user_text: text })
+    });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      throw new Error(d.detail || ("HTTP " + res.status));
+    }
+    const data = await res.json();
+    data.source = "api";
+    showResult(data, true);
+    addHistory(data);
+  } catch (err) {
+    alert("复检失败：" + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "🔄 复检";
+    if ($("recheckInput")) $("recheckInput").value = text;
+  }
+}
+
+let recog = null, recogActive = false;
+function toggleVoice() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const micBtn = $("voiceBtn");
+  if (!SR) {
+    alert("当前浏览器不支持网页语音识别。请使用 Chrome / Edge 浏览器，或安卓版微信内置浏览器打开。");
+    return;
+  }
+  if (recogActive) { recog && recog.stop(); return; }
+  recog = new SR();
+  recog.lang = "zh-CN";
+  recog.interimResults = true;
+  recog.continuous = false;
+  recog.onstart = () => {
+    recogActive = true;
+    micBtn.textContent = "⏹";
+    micBtn.classList.add("listening");
+    $("recheckInput").placeholder = "正在聆听，请说出复检命令…";
+  };
+  recog.onresult = e => {
+    let t = "";
+    for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+    $("recheckInput").value = t;
+  };
+  const _stop = () => {
+    recogActive = false;
+    micBtn.textContent = "🎤";
+    micBtn.classList.remove("listening");
+    const inp = $("recheckInput");
+    if (inp) inp.placeholder = "例如：我觉得是苹果，请重新检验";
+  };
+  recog.onend = _stop;
+  recog.onerror = e => { _stop(); if (e.error !== "aborted" && e.error !== "no-speech") alert("语音识别失败：" + e.error + "（请检查麦克风权限）"); };
+  recog.start();
 }
 
 /* ============ 历史记录 ============ */
