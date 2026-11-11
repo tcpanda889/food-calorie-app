@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: food-calorie-api
+    runtime: python
+    plan: free
+    rootDir: server
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: GLM_API_KEY
+        sync: false
+      - key: GLM_MODEL
+        value: glm-4v-flash
+      - key: BAIDU_API_KEY
+        sync: false
+      - key: BAIDU_SECRET_KEY
+        sync: false
